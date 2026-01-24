@@ -3,6 +3,9 @@ import argparse
 import json
 import os
 import sys
+from packaging import version as pkg_version
+from packaging.version import parse as parse_version
+import re
 
 COMPATIBILITY_MAP = {
     "bukkit": ["bukkit"],
@@ -17,212 +20,176 @@ def confirm(prompt, yes):
         return True
     return input(f"{prompt} [y/N]: ").lower() == "y"
 
-def init(args):
-    dir_exists = os.path.exists(".pacmine/")
-    if not dir_exists:
-        os.mkdir(".pacmine/")
+def normalize_version(v):
+    try:
+        return pkg_version.parse(v)
+    except:
+        return None
+
+def init(args, env=None):
+    os.makedirs(".pacmine", exist_ok=True)
     version = input("Version: ")
     core = input("Core: ")
-    if not core in COMPATIBILITY_MAP:
+    if core not in COMPATIBILITY_MAP:
         print("Not supported")
         sys.exit(1)
-    data = {
-        'version': version,
-        'core': core
-    }
-    
+    data = {"version": version, "core": core}
     with open('.pacmine/env', 'w', encoding='utf-8') as f:
-        f.write(json.dumps(data))
-    
+        json.dump(data, f)
+
 def load_env():
-    env_exists = os.path.exists(".pacmine/env")  
-    if not env_exists:
-        print("Environment not initialized!")
-        print("Exec: pacmine init")
+    if not os.path.exists(".pacmine/env"):
+        print("Environment not initialized! Run: pacmine init")
         sys.exit(1)
+    with open('.pacmine/env', 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-    f = open('.pacmine/env', 'r', encoding='utf-8')
-    env = json.loads(f.read())
-    
-    return env
+def get_plugin(project_id, core, version=None):
+    r = httpx.get(f'https://api.modrinth.com/v2/project/{project_id}/version', headers=HEADERS)
+    all_versions = r.json()
 
-def search_plugins(query, core, version):
-    params = {}
-    params["query"] = query
-    params["facets"] = json.dumps([[f"categories:{c}" for c in COMPATIBILITY_MAP.get(core, [core])],[f"versions:{version}"]])
+    if not version:
+        return all_versions[0]
 
-    r = httpx.get('https://api.modrinth.com/v2/search', params=params, headers=HEADERS)
-    data = json.loads(r.text)
-    return data   
+    target_version = parse_version(version)
+    compatible_versions = []
 
-def get_plugin(project_id, core, version):
-    params = {}
-    params["loaders"] = json.dumps(COMPATIBILITY_MAP.get(core))
-    params["game_versions"] = version
-
-    r = httpx.get(f'https://api.modrinth.com/v2/project/{project_id}/version', params=params, headers=HEADERS)
-    data = json.loads(r.text)
-    return data[0]      
-
-def search(args,env):
-    core = env['core']
-    version = env['version']
-    query = args.query
-
-    print(f"Searching plugins... {version} {core}")
-    data = search_plugins(query, core, version)
-    hits = data.get('hits')
-    if not hits or len(hits) < 1:
-        print(f"Error: {data}")
-        return
-
-    print(f"Founded plugins({len(hits)}): ")
-    for plugin in data.get('hits'):
-        print(f"'{plugin['title']}'")
-
-def get_installed_plugins():
-    env_exists = os.path.exists(".pacmine/env")  
-    if not env_exists:
-        print("Environment not initialized!")
-        print("Exec: pacmine init")
-        sys.exit(1) 
-
-    plugins_exists = os.path.exists(".pacmine/plugins.json")
-    if not plugins_exists:
-        with open('.pacmine/plugins.json', 'w', encoding='utf-8') as f:
-            f.write("{}")
-        return {}
-
-    f = open('.pacmine/plugins.json','r',encoding='utf-8')
-    data = json.loads(f.read())
-    return data
-
-def add_plugin(plugin):
-    env_exists = os.path.exists(".pacmine/env")  
-    if not env_exists:
-        print("Environment not initialized!")
-        print("Exec: pacmine init")
-        sys.exit(1) 
-
-    plugins_exists = os.path.exists(".pacmine/plugins.json")
-    if not plugins_exists:
-        with open('.pacmine/plugins.json', 'w', encoding='utf-8') as f:
-            f.write("{}")
-
-    plugins = get_installed_plugins()
-    if plugin['project_id'] in plugins and plugin['files'][0]['id'] == plugins[plugin['project_id']]['files'][0]['id']:
-        sys.exit(0)
-    else:    
-        plugins[plugin['project_id']]=plugin   
-    f = open('.pacmine/plugins.json','w',encoding="utf-8")    
-    f.write(json.dumps(plugins))
-    f.close()
-
-def remove_plugin(plugin):
-    env_exists = os.path.exists(".pacmine/env")  
-    if not env_exists:
-        print("Environment not initialized!")
-        print("Exec: pacmine init")
-        sys.exit(1)   
-
-    plugins_exists = os.path.exists(".pacmine/plugins.json")
-    if not plugins_exists:
-        with open('.pacmine/plugins.json', 'w', encoding='utf-8') as f:
-            f.write("{}")
-            print("Plugin not installed")
-            sys.exit(1)
-
-    plugins = get_installed_plugins()
-
-    if plugin['project_id'] in plugins:
-        file_data = plugin['files'][0]
-        file_name = file_data['filename']
-        os.remove(f"plugins/{file_name}")
-        del plugins[plugin['project_id']]
-    else:
-        print("Plugin not installed")
-        
-    f = open('.pacmine/plugins.json','w',encoding='utf-8')    
-    f.write(json.dumps(plugins))
-    f.close()
-    return     
-
-def uninstall(args,env):
-    core = env['core']
-    version = env['version']
-    query = args.query
-
-    plugins = get_installed_plugins()
-
-    found_plugin = None
-
-    for _,data in plugins.items():
-        if query.lower() == data['name'].lower():
-            found_plugin = data
-            break
-            
-    if not found_plugin:
-        for _,data in plugins.items():
-            if query.lower() in data['name'].lower():
-                found_plugin = data
+    for v in all_versions:
+        for gv in v["game_versions"]:
+            gv_parsed = parse_version(gv)
+            if gv_parsed is not None:
+                if gv_parsed <= target_version:
+                    compatible_versions.append((gv_parsed, v))
                 break
 
-    if not found_plugin:
+    if compatible_versions:
+        closest = max(compatible_versions, key=lambda x: x[0])[1]
+        print(f"Exact version not found, using closest compatible: {closest['game_versions'][-1]}")
+        return closest
+
+    return None
+    
+def search_plugins(query, core):
+    params = {
+        "query": query,
+        "facets": json.dumps([[f"categories:{c}" for c in COMPATIBILITY_MAP.get(core, [core])]])
+    }
+    r = httpx.get('https://api.modrinth.com/v2/search', params=params, headers=HEADERS)
+    return r.json()
+
+
+    def get_plugin(project_id, core, version=None):
+        params = {"loaders": json.dumps(COMPATIBILITY_MAP.get(core))}
+        r = httpx.get(f'https://api.modrinth.com/v2/project/{project_id}/version', headers=HEADERS)
+        all_versions = r.json()
+    
+        if not version:
+            return all_versions[0]
+    
+        target_version = parse_version(version)
+        compatible_versions = []
+    
+        for v in all_versions:
+            for gv in v["game_versions"]:
+                gv_parsed = parse_version(gv)
+                if gv_parsed is not None:
+                    diff = abs(target_version - gv_parsed)
+                    compatible_versions.append((diff, v))
+                    break
+    
+        if compatible_versions:
+            closest = min(compatible_versions, key=lambda x: x[0])[1]
+            print(f"Exact version not found, using closest compatible: {closest['game_versions'][-1]}")
+            return closest
+    
+        return None
+
+def search(args, env):
+    data = search_plugins(args.query, env['core'])
+    hits = data.get('hits', [])
+    if not hits:
+        print("No plugins found.")
+        return
+    print(f"Found {len(hits)} plugins:")
+    for plugin in hits:
+        print(f" - {plugin['title']}")
+
+def get_installed_plugins():
+    os.makedirs(".pacmine", exist_ok=True)
+    path = ".pacmine/plugins.json"
+    if not os.path.exists(path):
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({}, f)
+        return {}
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def add_plugin(plugin):
+    plugins = get_installed_plugins()
+    pid = plugin['project_id']
+    if pid not in plugins or plugins[pid]['files'][0]['id'] != plugin['files'][0]['id']:
+        plugins[pid] = plugin
+    with open(".pacmine/plugins.json", 'w', encoding='utf-8') as f:
+        json.dump(plugins, f)
+
+def remove_plugin(plugin):
+    plugins = get_installed_plugins()
+    pid = plugin['project_id']
+    if pid in plugins:
+        os.remove(f"plugins/{plugins[pid]['files'][0]['filename']}")
+        del plugins[pid]
+    with open(".pacmine/plugins.json", 'w', encoding='utf-8') as f:
+        json.dump(plugins, f)
+
+def uninstall(args, env):
+    plugins = get_installed_plugins()
+    found = None
+    for p in plugins.values():
+        if args.query.lower() == p['name'].lower() or args.query.lower() in p['name'].lower():
+            found = p
+            break
+    if not found:
         print("Plugin not found")
         sys.exit(1)
-
-    if not confirm("Uninstall?", args.yes):
-        sys.exit(0)
-
-    remove_plugin(found_plugin)
+    if confirm("Uninstall?", args.yes):
+        remove_plugin(found)
+        print(f"Uninstalled: {found['name']}")
 
 def download(plugin):
     file_data = plugin['files'][0]
-    file_name = file_data['filename']
-    file_url = file_data['url']
-    r = httpx.get(file_url, headers=HEADERS)
-    with open(f'plugins/{file_name}','wb') as f:
+    url = file_data['url']
+    os.makedirs("plugins", exist_ok=True)
+    r = httpx.get(url, headers=HEADERS)
+    with open(f"plugins/{file_data['filename']}", 'wb') as f:
         f.write(r.content)
-    
-def install(args,env):
-    core = env['core']
-    version = env['version']
-    query = args.query
 
-    print(f"Searching plugins... {version} {core}")
-    data = search_plugins(query, core, version)
-    hits = data.get('hits')
-    if not hits or len(hits) < 1:
-        print(f"Error: {data}")
+def install(args, env):
+    data = search_plugins(args.query, env['core'])
+    hits = data.get('hits', [])
+    if not hits:
+        print("Plugin not found.")
         sys.exit(1)
 
-    plugin = get_plugin(hits[0]['project_id'],core,version)
-    deps = plugin.get("dependencies", [])
-    required = [d for d in deps if d["dependency_type"] == "required"]
-    file_data = plugin['files'][0]
-    file_name = file_data['filename']
+    plugin = get_plugin(hits[0]['project_id'], env['core'], env['version'])
+    if not plugin:
+        print("No compatible version found.")
+        sys.exit(1)
 
-    print(f"Founded: '{plugin['name']}' {file_name}")
-    if len(required) > 0:
-        print("Dependencies: ")
-        for dep in required:
-            print(f" {dep['project_id']['name']}")
+    deps = [d for d in plugin.get("dependencies", []) if d["dependency_type"] == "required"]
 
     if not confirm("Install?", args.yes):
         sys.exit(0)
 
-    os.makedirs("plugins", exist_ok=True)
-
     add_plugin(plugin)
-
-    for dep in required:
-        dep_plugin = get_plugin(dep["project_id"], core, version)
+    for dep in deps:
+        dep_plugin = get_plugin(dep["project_id"], env['core'], env['version'])
         add_plugin(dep_plugin)
         download(dep_plugin)
         print(f"Installed dependency: {dep_plugin['name']}")
 
     download(plugin)
-    
+    print(f"Installed: {plugin['name']}")
+
 def list_plugins(args, env):
     plugins = get_installed_plugins()
     if not plugins:
@@ -241,41 +208,32 @@ commands = {
 }
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="pacmine",
-        description="Simple plugin manager for minecraft servers."
-    )
+    parser = argparse.ArgumentParser(prog="pacmine", description="Simple plugin manager for Minecraft servers")
+    sp = parser.add_subparsers(dest="command", required=True)
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    sp.add_parser("init", help="Initialize server")
 
-    subparsers.add_parser("init", help="Initialize server")
+    search_parser = sp.add_parser("search", help="Search plugins")
+    search_parser.add_argument("query")
 
-    search = subparsers.add_parser("search", help="Search plugins")
-    search.add_argument("query")
+    install_parser = sp.add_parser("install", help="Install plugin")
+    install_parser.add_argument("query")
+    install_parser.add_argument("-y", "--yes", action="store_true")
 
-    install = subparsers.add_parser("install", help="Install plugin")
-    install.add_argument("query")
-    install.add_argument("-y", "--yes", action="store_true")
-    
-    list = subparsers.add_parser("list", help="Show list of installed plugins")   
+    sp.add_parser("list", help="List installed plugins")
 
-    uninstall = subparsers.add_parser("uninstall", help="Uninstall plugin")
-    uninstall.add_argument("query")
-    uninstall.add_argument("-y", "--yes", action="store_true")
-    
+    uninstall_parser = sp.add_parser("uninstall", help="Uninstall plugin")
+    uninstall_parser.add_argument("query")
+    uninstall_parser.add_argument("-y", "--yes", action="store_true")
+
     args = parser.parse_args()
-    command = args.command
+    env = None
+    if args.command != "init":
+        env = load_env()
 
-    if command == "init":
-        commands.get(command)(args)
-        return
-        
-    env = load_env()
-    
-    func = commands.get(command)
+    func = commands.get(args.command)
     if callable(func):
         func(args, env)
-    
-    
+
 if __name__ == "__main__":
     main()
