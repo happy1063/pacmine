@@ -1,0 +1,8 @@
+[project]
+name = "pacmine"
+version = "0.0.1"
+description = "Simple plugin manager for minecraft servers"
+dependencies = ["httpx"]
+
+[project.scripts]
+pacmine = "pacmine.__main__:main"
