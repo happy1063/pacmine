@@ -12,10 +12,10 @@ HEADERS = {"User-Agent": "pacmine/0.0.1"}
 COMPATIBILITY_MAP = {
     "velocity": ["velocity"],
     "bungeecord": ["bungeecord"],
-    "bukkit": ["bukkit", "spigot", "paper", "purpur"],
-    "spigot": ["spigot", "paper", "purpur"],
-    "paper": ["paper", "purpur"],
-    "purpur": ["purpur"]
+    "bukkit": ["bukkit"],
+    "spigot": ["spigot", "bukkit"],
+    "paper": ["paper", "spigot", "bukkit"],
+    "purpur": ["purpur", "spigot", "paper", "purpur"]
 }
 
 
@@ -53,69 +53,48 @@ def load_env():
 
 
 def get_plugin(project_id, core, version=None):
+    loaders = COMPATIBILITY_MAP.get(core, [core])
+    params = {"loaders": json.dumps(loaders)}
+
     r = httpx.get(
-        f'https://api.modrinth.com/v2/project/{project_id}/version', headers=HEADERS)
+        f'https://api.modrinth.com/v2/project/{project_id}/version', params=params, headers=HEADERS)
+    if r.status_code != 200:
+        return None
     all_versions = r.json()
 
+    if not all_versions:
+        return None
     if not version:
         return all_versions[0]
 
     target_version = parse_version(version)
-    compatible_versions = []
+    compatible_candidates = []
 
     for v in all_versions:
         for gv in v["game_versions"]:
             gv_parsed = parse_version(gv)
-            if gv_parsed is not None:
-                if gv_parsed <= target_version:
-                    compatible_versions.append((gv_parsed, v))
-                break
+            if gv_parsed:
+                if gv_parsed == target_version:
+                    return v
+                if gv_parsed < target_version:
+                    compatible_candidates.append((gv_parsed, v))
 
-    if compatible_versions:
-        closest = max(compatible_versions, key=lambda x: x[0])[1]
-        print(f"Exact version not found, using closest compatible: {
-              closest['game_versions'][-1]}")
-        return closest
+    if compatible_candidates:
+        best_match = max(compatible_candidates, key=lambda x: x[0])
+        print(f"Exact version not found, using closest compatible version: {
+              best_match[0]} for file {best_match[1].get('name', 'unknown')}")
+        return best_match[1]
 
     return None
 
 
 def search_plugins(query, core):
-    params = {
-        "query": query,
-        "facets": json.dumps([[f"categories:{c}" for c in COMPATIBILITY_MAP.get(core, [core])]])
-    }
+    loaders = COMPATIBILITY_MAP.get(core, [core])
+    facets = json.dumps([[f"categories:{c}" for c in loaders]])
+    params = {"query": query, "facets": facets}
     r = httpx.get('https://api.modrinth.com/v2/search',
                   params=params, headers=HEADERS)
     return r.json()
-
-    def get_plugin(project_id, core, version=None):
-        params = {"loaders": json.dumps(COMPATIBILITY_MAP.get(core))}
-        r = httpx.get(
-            f'https://api.modrinth.com/v2/project/{project_id}/version', headers=HEADERS)
-        all_versions = r.json()
-
-        if not version:
-            return all_versions[0]
-
-        target_version = parse_version(version)
-        compatible_versions = []
-
-        for v in all_versions:
-            for gv in v["game_versions"]:
-                gv_parsed = parse_version(gv)
-                if gv_parsed is not None:
-                    diff = abs(target_version - gv_parsed)
-                    compatible_versions.append((diff, v))
-                    break
-
-        if compatible_versions:
-            closest = min(compatible_versions, key=lambda x: x[0])[1]
-            print(f"Exact version not found, using closest compatible: {
-                  closest['game_versions'][-1]}")
-            return closest
-
-        return None
 
 
 def search(args, env):
@@ -169,6 +148,7 @@ def uninstall(args, env):
     if not found:
         print("Plugin not found")
         sys.exit(1)
+    print(found['name'])
     if confirm("Uninstall?", args.yes):
         remove_plugin(found)
         print(f"Uninstalled: {found['name']}")
@@ -197,6 +177,8 @@ def install(args, env):
 
     deps = [d for d in plugin.get(
         "dependencies", []) if d["dependency_type"] == "required"]
+
+    print(f"{plugin['files'][0]['filename']} {plugin['game_versions']}")
 
     if not confirm("Install?", args.yes):
         sys.exit(0)
